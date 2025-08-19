@@ -1,0 +1,25 @@
+# Ignore sensitive environment files
+.env
+
+# Ignore Python virtual environment directory
+.venv/
+
+# Ignore Pyvis HTML output
+*.html
+
+# Ignore common Python artifacts
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+*.pyc
+
+# Ignore IDE-specific files
+.vscode/
+
+# Ignore all data files, but make an exception for blockholders.csv
+/data/*
+!/data/blockholders.csv
+
+# Ignore auto-generated output and log files
+/output/
+/logs/

@@ -1,0 +1,14 @@
+pandas
+numpy
+python-dotenv
+neo4j
+gqlalchemy
+streamlit
+plotly
+google-generativeai
+langchain
+langchain-core
+langchain-community
+yfinance
+beautifulsoup4
+pyvis
