@@ -7,6 +7,8 @@ import plotly.graph_objects as go
 from gqlalchemy import Memgraph, Node, Relationship
 import logging
 from dotenv import load_dotenv
+import google.generativeai as genai
+import json
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -15,8 +17,6 @@ from modules.logging_utils import logger
 from modules.risk_engine import RiskEngine
 from modules.llm_utils import query_llm, explain_query_result, get_gemini_model
 from visualizations.graph_renderer import render_graph_as_html
-import google.generativeai as genai
-import json
 from modules.db_loader import DBLoader, Blockholder, Company, RiskFactor, OWNS, EXPOSED_TO
 
 logger.setLevel(logging.INFO)
@@ -149,7 +149,7 @@ def get_risk_factor_list():
         return [row['name'] for row in results]
     except Exception as e:
         logger.error(f"Error fetching risk factor list: {e}", exc_info=True)
-        return []
+        return {}
 
 @st.cache_data(show_spinner="Fetching sector list...")
 def get_sector_list():
@@ -176,10 +176,10 @@ def get_location_list():
         return {}
 
 with st.sidebar:
-    st.image("https://www.memgraph.com/static/mg-logo-white-932c0211a774187f54c9354054a3903a.svg", width=250)
+    st.image("https://upload.wikimedia.org/wikipedia/en/thumb/9/9a/Mphasis_logo.svg/1200px-Mphasis_logo.svg.png", width=250)
     st.header("Navigation")
     
-    selected_page = st.radio("Choose a section", ["📊 Graph View", "📈 Risk Analytics", "🧪 Scenario Analysis", "💬 NL Query"])
+    selected_page = st.radio("Choose a section", ["📈 Risk Analytics", "📊 Company/Blockholder View", "🧪 Scenario Analysis", "💬 NL Query"])
     
     st.markdown("---")
     st.header("Actions")
@@ -189,111 +189,8 @@ with st.sidebar:
         with st.spinner("Recalculating..."):
             st.session_state.risk_engine = initialize_risk_engine()
         st.success("Risk metrics recalculated!")
-
-if selected_page == "📊 Graph View":
-    
-    company_name_to_id = get_company_list()
-    company_names = sorted(list(company_name_to_id.keys()))
-    blockholder_name_to_id = get_blockholder_list()
-    blockholder_names = sorted(list(blockholder_name_to_id.keys()))
-
-    selected_node_type = st.radio(
-        "**Select node type to visualize:**",
-        ["Company", "Blockholder"],
-        index=0
-    )
-    
-    selected_node_name = ""
-    selected_node_id = ""
-
-    if selected_node_type == "Company":
-        selected_node_name = st.selectbox(
-            "**Select a company to view its risk profile:**",
-            [""] + company_names,
-            index=0,
-            help="Choose a company to visualize its network of owners and risks."
-        )
-        if selected_node_name:
-            selected_node_id = company_name_to_id.get(selected_node_name)
-    else: # Blockholder
-        selected_node_name = st.selectbox(
-            "**Select a blockholder to view its inherited risk profile:**",
-            [""] + blockholder_names,
-            index=0,
-            help="Choose a blockholder to visualize its direct ownerships and the risks of those companies."
-        )
-        if selected_node_name:
-            selected_node_id = blockholder_name_to_id.get(selected_node_name)
-
-
-    if selected_node_name:
-        st.markdown("### 🗂 Graph Legend")
-        st.markdown("---")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown(
-                """
-                **🎨 Node Colors:**<br>
-                <span style='color:#e67e22;'>&#11044;</span> <strong>High Risk</strong> — Risk level > <strong>66%</strong> of max<br>
-                <span style='color:#f1c40f;'>&#11044;</span> <strong>Medium Risk</strong> — Risk level between <strong>34%–66%</strong><br>
-                <span style='color:#27ae60;'>&#11044;</span> <strong>Low Risk</strong> — Risk level < <strong>33%</strong><br>
-                <span style='color:#7f8c8d;'>&#11044;</span> <strong>No Risk</strong> — Dollarized Risk = <strong>$0</strong><br>
-                <span style='color:#e74c3c;'>&#9670;</span> <strong>Risk Factor</strong> — Fixed color and diamond shape
-                """,
-                unsafe_allow_html=True
-        )
-
-        with col2:
-            st.markdown(
-                """
-                **📏 Node Sizing:**<br>
-                <strong>Companies</strong> and <strong>Blockholders</strong> → Larger size = Higher <strong>Dollarized Risk</strong><br>
-                <strong>Risk Factors</strong> → Size reflects aggregated <strong>exposure percentage</strong>
-                """,
-                unsafe_allow_html=True
-            )
-    
-        st.markdown("---")
-
-
-
-        if selected_node_type == "Company":
-            graph_cypher_query = f"""
-                MATCH (c:Company {{id: '{selected_node_id}'}})
-                OPTIONAL MATCH (bh:Blockholder)-[o:OWNS]->(c)
-                OPTIONAL MATCH (c)-[o2:OWNS]->(owned_c:Company)
-                OPTIONAL MATCH (owned_c)-[o3:OWNS]->(sub_owned_c:Company)
-                OPTIONAL MATCH (c)-[e1:EXPOSED_TO]->(rf1:RiskFactor)
-                OPTIONAL MATCH (owned_c)-[e2:EXPOSED_TO]->(rf2:RiskFactor)
-                OPTIONAL MATCH (sub_owned_c)-[e3:EXPOSED_TO]->(rf3:RiskFactor)
-                RETURN c, bh, o, owned_c, o2, sub_owned_c, o3, rf1, e1, rf2, e2, rf3, e3
-                LIMIT 100
-            """
-        else: # Blockholder
-            graph_cypher_query = f"""
-                MATCH (bh:Blockholder {{id: '{selected_node_id}'}})
-                OPTIONAL MATCH (bh)-[o1:OWNS]->(c1:Company)
-                OPTIONAL MATCH (c1)-[o2:OWNS]->(c2:Company)
-                OPTIONAL MATCH (c2)-[o3:OWNS]->(c3:Company)
-                OPTIONAL MATCH (c1)-[e1:EXPOSED_TO]->(rf1:RiskFactor)
-                OPTIONAL MATCH (c2)-[e2:EXPOSED_TO]->(rf2:RiskFactor)
-                OPTIONAL MATCH (c3)-[e3:EXPOSED_TO]->(rf3:RiskFactor)
-                RETURN bh, o1, c1, o2, c2, o3, c3, e1, rf1, e2, rf2, e3, rf3
-                LIMIT 200
-            """
         
-        with st.spinner("🔄 Rendering personalized risk graph..."):
-            try:
-                html_content = render_graph_as_html(graph_cypher_query)
-                st.components.v1.html(html_content, height=1200, width=1200, scrolling=True)
-            except Exception as e:
-                st.error(f"❌ Failed to render graph: {e}. Check console for details.")
-    else:
-        st.info("Please select a company or blockholder from the dropdown to visualize its risk profile.")
-
-elif selected_page == "📈 Risk Analytics":
+if selected_page == "📈 Risk Analytics":
     st.header("📈 Portfolio Risk Insights")
     
     col1, col2 = st.columns(2)
@@ -337,8 +234,8 @@ elif selected_page == "📈 Risk Analytics":
                     marker = {"color": "red"}
                 ))
                 fig.update_layout(title_text="Top 10 Riskiest Blockholders by Dollarized Risk",
-                                  xaxis_title="Dollarized Risk ($ Billions)",
-                                  yaxis_title="Blockholder Name")
+                                 xaxis_title="Dollarized Risk ($ Billions)",
+                                 yaxis_title="Blockholder Name")
                 st.plotly_chart(fig)
             else:
                 st.info("No top blockholders by total risk found.")
@@ -430,6 +327,106 @@ elif selected_page == "📈 Risk Analytics":
         except Exception as e:
             st.error(f"❌ Error fetching critical nodes: {e}")
 
+
+elif selected_page == "📊 Company/Blockholder View":
+    company_name_to_id = get_company_list()
+    company_names = sorted(list(company_name_to_id.keys()))
+    blockholder_name_to_id = get_blockholder_list()
+    blockholder_names = sorted(list(blockholder_name_to_id.keys()))
+
+    selected_node_type = st.radio(
+        "**Select node type to visualize:**",
+        ["Company", "Blockholder"],
+        index=0
+    )
+    
+    selected_node_name = ""
+    selected_node_id = ""
+
+    if selected_node_type == "Company":
+        selected_node_name = st.selectbox(
+            "**Select a company to view its risk profile:**",
+            [""] + company_names,
+            index=0,
+            help="Choose a company to visualize its network of owners and risks."
+        )
+        if selected_node_name:
+            selected_node_id = company_name_to_id.get(selected_node_name)
+    else: # Blockholder
+        selected_node_name = st.selectbox(
+            "**Select a blockholder to view its inherited risk profile:**",
+            [""] + blockholder_names,
+            index=0,
+            help="Choose a blockholder to visualize its direct ownerships and the risks of those companies."
+        )
+        if selected_node_name:
+            selected_node_id = blockholder_name_to_id.get(selected_node_name)
+
+    if selected_node_name:
+        st.markdown("### 🗂 Graph Legend")
+        st.markdown("---")
+        
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown(
+                """
+                **🎨 Node Colors:**<br>
+                <span style='color:#e67e22;'>&#11044;</span> **High Risk** — Risk level > **66%** of max<br>
+                <span style='color:#f1c40f;'>&#11044;</span> **Medium Risk** — Risk level between **34%–66%**<br>
+                <span style='color:#27ae60;'>&#11044;</span> **Low Risk** — Risk level < **33%**<br>
+                <span style='color:#7f8c8d;'>&#11044;</span> **No Risk** — Dollarized Risk = **$0**<br>
+                <span style='color:#e74c3c;'>&#9670;</span> **Risk Factor** — Fixed color and diamond shape
+                """,
+                unsafe_allow_html=True
+            )
+
+        with col2:
+            st.markdown(
+                """
+                **📏 Node Sizing:**<br>
+                **Nodes** with higher **Dollarized Risk** appear larger.<br>
+                **Risk Factor** size is based on total exposure.
+                """,
+                unsafe_allow_html=True
+            )
+        st.markdown("---")
+
+        if selected_node_type == "Company":
+            graph_cypher_query = f"""
+                MATCH (c:Company {{id: '{selected_node_id}'}})
+                OPTIONAL MATCH (bh:Blockholder)-[o:OWNS]->(c)
+                OPTIONAL MATCH (c)-[o2:OWNS]->(owned_c:Company)
+                OPTIONAL MATCH (owned_c)-[o3:OWNS]->(sub_owned_c:Company)
+                OPTIONAL MATCH (c)-[e1:EXPOSED_TO]->(rf1:RiskFactor)
+                OPTIONAL MATCH (owned_c)-[e2:EXPOSED_TO]->(rf2:RiskFactor)
+                OPTIONAL MATCH (sub_owned_c)-[e3:EXPOSED_TO]->(rf3:RiskFactor)
+                RETURN c, bh, o, owned_c, o2, sub_owned_c, o3, rf1, e1, rf2, e2, rf3, e3
+                LIMIT 100
+            """
+        else: # Blockholder
+            graph_cypher_query = f"""
+                MATCH (bh:Blockholder {{id: '{selected_node_id}'}})
+                OPTIONAL MATCH (bh)-[o1:OWNS]->(c1:Company)
+                OPTIONAL MATCH (c1)-[o2:OWNS]->(c2:Company)
+                OPTIONAL MATCH (c2)-[o3:OWNS]->(c3:Company)
+                OPTIONAL MATCH (c1)-[e1:EXPOSED_TO]->(rf1:RiskFactor)
+                OPTIONAL MATCH (c2)-[e2:EXPOSED_TO]->(rf2:RiskFactor)
+                OPTIONAL MATCH (c3)-[e3:EXPOSED_TO]->(rf3:RiskFactor)
+                RETURN bh, o1, c1, o2, c2, o3, c3, e1, rf1, e2, rf2, e3, rf3
+                LIMIT 200
+            """
+        
+        with st.spinner("🔄 Rendering personalized risk graph..."):
+            try:
+                html_content = render_graph_as_html(graph_cypher_query)
+                st.components.v1.html(html_content, height=1200, width=1200, scrolling=True)
+            except Exception as e:
+                st.error(f"❌ Failed to render graph: {e}. Check console for details.")
+    else:
+        st.info("Please select a company or blockholder from the dropdown to visualize its risk profile.")
+
+
 elif selected_page == "🧪 Scenario Analysis":
     st.header("🧪 Scenario Analysis & Simulation")
     
@@ -439,11 +436,10 @@ elif selected_page == "🧪 Scenario Analysis":
     sector_names = get_sector_list()
     location_names = get_location_list()
 
-    scenario_type = st.radio("Select Scenario Type", ["Acquisition", "Divestiture", "Risk Event Impact"])
+    scenario_type = st.radio("Select Scenario Type", ["Acquisition", "Risk Event Impact"])
 
     if st.session_state.get('last_scenario_type') != scenario_type:
         st.session_state.acquisition_results = None
-        st.session_state.divestiture_results = None
         st.session_state.risk_event_results = None
     st.session_state.last_scenario_type = scenario_type
 
@@ -493,67 +489,14 @@ elif selected_page == "🧪 Scenario Analysis":
             diff_df = results["diff_df"]
             if not diff_df.empty:
                 st.subheader("📈 Risk Changes After Acquisition")
-                st.dataframe(diff_df)
                 st.markdown("**LLM Summary:**")
                 st.markdown(results["llm_summary"])
+                st.dataframe(diff_df)
                 st.download_button("📥 Download Risk Changes CSV", diff_df.to_csv(index=False).encode('utf-8'), file_name="acquisition_risk_changes.csv")
             else:
                 st.info("No significant risk changes detected after acquisition. Graph state may have updated.")
         elif st.session_state.get('acquisition_results') and st.session_state.acquisition_results["status"] == "error":
             st.error(st.session_state.acquisition_results["message"])
-
-    elif scenario_type == "Divestiture":
-        st.subheader("✂️ Simulate Company Divestiture")
-        col1, col2 = st.columns(2)
-        with col1:
-            divesting_name = st.selectbox("Divesting Company Name", [""] + company_names, index=0, help="Select the company divesting shares.")
-            divesting_id = company_name_to_id.get(divesting_name)
-        with col2:
-            divested_name = st.selectbox("Divested Company Name", [""] + company_names, index=1, help="Select the company being divested.")
-            divested_id = company_name_to_id.get(divested_name)
-            
-        if st.button("Run Divestiture Scenario"):
-            if divesting_id and divested_id and st.session_state.risk_engine:
-                with st.spinner("Running divestiture scenario..."):
-                    try:
-                        st.session_state.risk_engine.export_snapshot("output/snapshot_before.json")
-                        success = st.session_state.risk_engine.simulate_divestiture(divesting_id, divested_id)
-                        if success:
-                            st.session_state.risk_engine.compute_total_risk()
-                            st.session_state.risk_engine.dollarize_risk()
-                            st.cache_data.clear()
-                            st.cache_resource.clear()
-                            st.session_state.risk_engine.export_snapshot("output/snapshot_after.json")
-                            st.session_state.risk_engine.generate_diff("output/snapshot_before.json", "output/snapshot_after.json")
-                            diff_df = pd.read_csv("output/diff_report.csv")
-                            llm_summary = "❌ LLM is not configured (GEMINI_API_KEY missing or invalid)."
-                            if LLM_ENABLED and not diff_df.empty:
-                                llm_summary = query_llm(f"Summarize the following risk changes after a divestiture. Focus on top gainers/losers in total risk. Data:\n{diff_df.to_string()}")
-                            st.session_state.divestiture_results = {"status": "success", "diff_df": diff_df, "llm_summary": llm_summary}
-                            st.rerun()
-                        else:
-                            st.session_state.divestiture_results = {"status": "error", "message": "Divestiture simulation failed. Check company names or console for details."}
-                            st.rerun()
-                    except Exception as e:
-                        st.session_state.divestiture_results = {"status": "error", "message": f"Error during divestiture scenario: {e}"}
-                        st.rerun()
-            else:
-                st.warning("Please provide both Divesting and Divested Company names.")
-
-        if st.session_state.get('divestiture_results') and st.session_state.divestiture_results["status"] == "success":
-            results = st.session_state.divestiture_results
-            st.success("Divestiture simulated successfully!")
-            diff_df = results["diff_df"]
-            if not diff_df.empty:
-                st.subheader("📈 Risk Changes After Divestiture")
-                st.dataframe(diff_df)
-                st.markdown("**LLM Summary:**")
-                st.markdown(results["llm_summary"])
-                st.download_button("📥 Download Risk Changes CSV", diff_df.to_csv(index=False).encode('utf-8'), file_name="divestiture_risk_changes.csv")
-            else:
-                st.info("No significant risk changes detected after divestiture. Graph state may have updated.")
-        elif st.session_state.get('divestiture_results') and st.session_state.divestiture_results["status"] == "error":
-            st.error(st.session_state.divestiture_results["message"])
 
     elif scenario_type == "Risk Event Impact":
         st.subheader("🌪️ Simulate Risk Factor Impact")
@@ -593,8 +536,10 @@ elif selected_page == "🧪 Scenario Analysis":
                             )
                             
                             if updated_count > 0:
+                                # Trigger risk re-computation to propagate changes
                                 st.session_state.risk_engine.compute_total_risk()
                                 st.session_state.risk_engine.dollarize_risk()
+                                
                                 st.cache_data.clear()
                                 st.cache_resource.clear()
                                 st.session_state.risk_engine.export_snapshot("output/snapshot_after.json")
@@ -620,9 +565,9 @@ elif selected_page == "🧪 Scenario Analysis":
             diff_df = results["diff_df"]
             if not diff_df.empty:
                 st.subheader("📈 Risk Changes After Event")
-                st.dataframe(diff_df)
                 st.markdown("**LLM Summary:**")
                 st.markdown(results["llm_summary"])
+                st.dataframe(diff_df)
                 st.download_button("📥 Download Risk Changes CSV", diff_df.to_csv(index=False).encode('utf-8'), file_name="risk_event_risk_changes.csv")
             else:
                 st.info("No significant risk changes detected after event. This may be due to the target not being exposed to the specified risk factor, or the multiplier causing too small a change.")
@@ -645,48 +590,48 @@ The schema is for a company risk knowledge graph with the following structure an
 - Node Labels: `Company`, `Blockholder`, `RiskFactor`.
 - Relationship Types: `OWNS`, `EXPOSED_TO`.
 - **Nodes**:
-  - `Company` nodes have properties: `id`, `name`, `sector`, `location`, `total_risk`, `direct_risk`, `dollarized_risk`, `market_cap`.
-  - `Blockholder` nodes have properties: `id`, `name`, `type`, `total_risk`, `dollarized_risk`.
-  - `RiskFactor` nodes have a `name` property.
+    - `Company` nodes have properties: `id`, `name`, `sector`, `location`, `total_risk`, `direct_risk`, `dollarized_risk`, `market_cap`.
+    - `Blockholder` nodes have properties: `id`, `name`, `type`, `total_risk`, `dollarized_risk`.
+    - `RiskFactor` nodes have a `name` property.
 - **Relationships**:
-  - `(p:Blockholder)-[o:OWNS]->(c:Company)`: `p` owns `c`. The relationship has a `percent` property (e.g., 0.5 for 50%).
-  - `(c:Company)-[e:EXPOSED_TO]->(rf:RiskFactor)`: `c` is exposed to `rf`. The relationship has a `weight` property (0.0-1.0).
+    - `(p:Blockholder)-[o:OWNS]->(c:Company)`: `p` owns `c`. The relationship has a `percent` property (e.g., 0.5 for 50%).
+    - `(c:Company)-[e:EXPOSED_TO]->(rf:RiskFactor)`: `c` is exposed to `rf`. The relationship has a `weight` property (0.0-1.0).
 - **Business Logic & Data Best Practices**:
-  - A `Company`'s `direct_risk` is the sum of all `e.weight` values from its outgoing `EXPOSED_TO` relationships.
-  - A `Blockholder`'s `total_risk` is a sum of its own `direct_risk` (if it were a company) plus the risks inherited from the companies it owns. The inherited risk is calculated as the owned company's `total_risk` multiplied by the ownership `o.percent`.
-  - `dollarized_risk` is calculated by multiplying `total_risk` by `market_cap`.
-  - To make queries more robust and handle case sensitivity, use `toLower()` for string matching, for example: `WHERE toLower(c.location) = 'new york'`.
-  - To prevent errors with null values, use `coalesce(property, 0)`.
+    - A `Company`'s `direct_risk` is the sum of all `e.weight` values from its outgoing `EXPOSED_TO` relationships.
+    - A `Blockholder`'s `total_risk` is a sum of its own `direct_risk` (if it were a company) plus the risks inherited from the companies it owns. The inherited risk is calculated as the owned company's `total_risk` multiplied by the ownership `o.percent`.
+    - `dollarized_risk` is calculated by multiplying `total_risk` by `market_cap`.
+    - To make queries more robust and handle case sensitivity, use `toLower()` for string matching, for example: `WHERE toLower(c.location) = 'new york'`.
+    - To prevent errors with null values, use `coalesce(property, 0)`.
 - **Example Query and Answer Pattern**:
-  Question: "What is the total risk of Apple Inc.?"
-  Correct Query:
-  MATCH (c:Company {name: "Apple Inc."})
-  RETURN c.total_risk AS TotalRisk
-  Question: "Which companies in the Energy sector have a total risk higher than 0.8?"
-  Correct Query:
-  MATCH (c:Company)
-  WHERE c.sector = "Energy" AND coalesce(c.total_risk, 0) > 0.8
-  RETURN c.name AS Company, c.total_risk AS TotalRisk
-  Question: "List the top 5 riskiest companies."
-  Correct Query:
-  MATCH (c:Company)
-  RETURN c.name AS Company, c.total_risk AS TotalRisk
-  ORDER BY TotalRisk DESC
-  LIMIT 5
-  Question: "Does Berkshire Hathaway Inc. own Exxon Mobil?"
-  Correct Query:
-  MATCH (b:Blockholder {name: "Berkshire Hathaway Inc."})-[o:OWNS]->(c:Company {name: "Exxon Mobil"})
-  RETURN o.percent AS OwnershipPercent
-  Question: "Which risk factor is J.P. Morgan Exchange-Traded Fund Trust most affected by?"
-  Correct Query:
-  MATCH (bh:Blockholder {name: "J.P. Morgan Exchange-Traded Fund Trust"})-[o:OWNS]->(c:Company)-[e:EXPOSED_TO]->(rf:RiskFactor)
-  RETURN rf.name AS RiskFactor, sum(coalesce(o.percent, 0) * coalesce(e.weight, 0)) AS InheritedRisk
-  ORDER BY InheritedRisk DESC
-  LIMIT 1
-  Question: "What is the dollarized risk of Apple Inc.?"
-  Correct Query:
-  MATCH (c:Company {name: "Apple Inc."})
-  RETURN c.dollarized_risk AS DollarizedRisk
+    Question: "What is the total risk of Apple Inc.?"
+    Correct Query:
+    MATCH (c:Company {name: "Apple Inc."})
+    RETURN c.total_risk AS TotalRisk
+    Question: "Which companies in the Energy sector have a total risk higher than 0.8?"
+    Correct Query:
+    MATCH (c:Company)
+    WHERE c.sector = "Energy" AND coalesce(c.total_risk, 0) > 0.8
+    RETURN c.name AS Company, c.total_risk AS TotalRisk
+    Question: "List the top 5 riskiest companies."
+    Correct Query:
+    MATCH (c:Company)
+    RETURN c.name AS Company, c.total_risk AS TotalRisk
+    ORDER BY TotalRisk DESC
+    LIMIT 5
+    Question: "Does Berkshire Hathaway Inc. own Exxon Mobil?"
+    Correct Query:
+    MATCH (b:Blockholder {name: "Berkshire Hathaway Inc."})-[o:OWNS]->(c:Company {name: "Exxon Mobil"})
+    RETURN o.percent AS OwnershipPercent
+    Question: "Which risk factor is J.P. Morgan Exchange-Traded Fund Trust most affected by?"
+    Correct Query:
+    MATCH (bh:Blockholder {name: "J.P. Morgan Exchange-Traded Fund Trust"})-[o:OWNS]->(c:Company)-[e:EXPOSED_TO]->(rf:RiskFactor)
+    RETURN rf.name AS RiskFactor, sum(coalesce(o.percent, 0) * coalesce(e.weight, 0)) AS InheritedRisk
+    ORDER BY InheritedRisk DESC
+    LIMIT 1
+    Question: "What is the dollarized risk of Apple Inc.?"
+    Correct Query:
+    MATCH (c:Company {name: "Apple Inc."})
+    RETURN c.dollarized_risk AS DollarizedRisk
 Now, translate the following natural language question into a valid, standalone Cypher query. Do not include any comments or extra text outside of the query itself.
 """
                 try:
@@ -715,4 +660,4 @@ Now, translate the following natural language question into a valid, standalone 
                     st.info("Possible issues: Invalid Cypher from LLM, Memgraph connection, or data error.")
 
 st.markdown("---")
-st.caption("Developed for portfolio graph analytics for MPHASIS.AI using Memgraph, Streamlit, and Google Gemini.")
+st.caption("Developed for portfolio graph analytics using Memgraph, Streamlit, and Google Gemini.")

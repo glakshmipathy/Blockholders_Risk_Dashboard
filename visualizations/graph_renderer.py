@@ -34,12 +34,12 @@ def render_graph_as_html(cypher_query: str) -> str:
           "iterations": 1000
         },
         "barnesHut": {
-          "gravitationalConstant": -15000,
-          "centralGravity": 0.2,
-          "springLength": 200,
-          "springConstant": 0.1,
-          "damping": 0.95,
-          "avoidOverlap": 1
+          "gravitationalConstant": -20000,
+          "centralGravity": 0.3,
+          "springLength": 250,
+          "springConstant": 0.05,
+          "damping": 0.9,
+          "avoidOverlap": 1.2
         },
         "minVelocity": 0.75,
         "solver": "barnesHut"
