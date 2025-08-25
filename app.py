@@ -469,6 +469,7 @@ elif selected_page == "🧪 Scenario Analysis":
                             st.session_state.risk_engine.export_snapshot("output/snapshot_after.json")
                             st.session_state.risk_engine.generate_diff("output/snapshot_before.json", "output/snapshot_after.json")
                             diff_df = pd.read_csv("output/diff_report.csv")
+                            diff_df = diff_df[diff_df['delta'] != 0] # Filter for non-zero changes
                             llm_summary = "❌ LLM is not configured (GEMINI_API_KEY missing or invalid)."
                             if LLM_ENABLED and not diff_df.empty:
                                 llm_summary = query_llm(f"Summarize the following risk changes after an acquisition. Focus on top gainers/losers in total risk. Data:\n{diff_df.to_string()}")
@@ -480,8 +481,6 @@ elif selected_page == "🧪 Scenario Analysis":
                     except Exception as e:
                         st.session_state.acquisition_results = {"status": "error", "message": f"Error during acquisition scenario: {e}"}
                         st.rerun()
-            else:
-                st.warning("Please provide both Acquiring and Acquired Company IDs.")
 
         if st.session_state.get('acquisition_results') and st.session_state.acquisition_results["status"] == "success":
             results = st.session_state.acquisition_results
@@ -496,168 +495,102 @@ elif selected_page == "🧪 Scenario Analysis":
             else:
                 st.info("No significant risk changes detected after acquisition. Graph state may have updated.")
         elif st.session_state.get('acquisition_results') and st.session_state.acquisition_results["status"] == "error":
-            st.error(st.session_state.acquisition_results["message"])
+            st.error(f"❌ {st.session_state.acquisition_results['message']}")
 
     elif scenario_type == "Risk Event Impact":
-        st.subheader("🌪️ Simulate Risk Factor Impact")
-        col1, col2 = st.columns(2)
-        with col1:
-            risk_factor_name = st.selectbox("Risk Factor Name", [""] + risk_factor_names, help="Select the risk factor to adjust. Must exist in graph.")
-        with col2:
-            impact_multiplier = st.number_input("Impact Multiplier (e.g., 1.2 for 20% increase, 0.8 for 20% decrease)", min_value=0.0, max_value=5.0, value=1.2, step=0.1, format="%.2f")
-
-        target_option = st.radio("Apply risk event to:", ("Specific Company", "By Sector or Location", "All Companies with this Risk Factor"))
-
-        target_company_id = None
-        target_sector = None
-        target_location = None
-
-        if target_option == "Specific Company":
-            target_company_name = st.selectbox("Target Company", [""] + company_names, help="Select a company to apply the risk event to.")
-            target_company_id = company_name_to_id.get(target_company_name) if target_company_name else None
-        elif target_option == "By Sector or Location":
-            target_sector = st.selectbox("Target Sector", [""] + sector_names, help="Only apply impact to companies in this sector.")
-            target_location = st.selectbox("Target Location", [""] + location_names, help="Only apply impact to companies in this location.")
+        st.subheader("💥 Simulate Risk Event Impact")
+        
+        selected_risk_factor = st.selectbox("Select Risk Factor", [""] + risk_factor_names)
+        impact_multiplier = st.number_input("Impact Multiplier (e.g., 1.5 for a 50% increase)", min_value=0.0, max_value=2.0, value=1.5, step=0.1)
+        
+        with st.expander("Target Specific Companies, Sectors, or Locations"):
+            target_company = st.selectbox("Target Company (optional)", [""] + company_names, index=0)
+            target_sector = st.selectbox("Target Sector (optional)", [""] + sector_names, index=0)
+            target_location = st.selectbox("Target Location (optional)", [""] + location_names, index=0)
 
         if st.button("Run Risk Event Scenario"):
-            if risk_factor_name and st.session_state.risk_engine:
-                if not target_company_id and not target_sector and not target_location and target_option != "All Companies with this Risk Factor":
-                    st.warning("Please select a target for the risk event, or choose 'All Companies with this Risk Factor'.")
-                else:
-                    with st.spinner("Running risk event scenario..."):
-                        try:
-                            st.session_state.risk_engine.export_snapshot("output/snapshot_before.json")
-                            updated_count = st.session_state.risk_engine.simulate_risk_event(
-                                risk_factor_name,
-                                impact_multiplier,
-                                target_company_id=target_company_id,
-                                target_sector=target_sector,
-                                target_location=target_location
-                            )
-                            
-                            if updated_count > 0:
-                                # Trigger risk re-computation to propagate changes
-                                st.session_state.risk_engine.compute_total_risk()
-                                st.session_state.risk_engine.dollarize_risk()
-                                
-                                st.cache_data.clear()
-                                st.cache_resource.clear()
-                                st.session_state.risk_engine.export_snapshot("output/snapshot_after.json")
-                                st.session_state.risk_engine.generate_diff("output/snapshot_before.json", "output/snapshot_after.json")
-                                diff_df = pd.read_csv("output/diff_report.csv")
-                                llm_summary = "❌ LLM is not configured (GEMINI_API_KEY missing or invalid)."
-                                if LLM_ENABLED and not diff_df.empty:
-                                    llm_summary = query_llm(f"Summarize the following risk changes after a risk event simulation. Focus on top gainers/losers in total risk. Data:\n{diff_df.to_string()}")
-                                st.session_state.risk_event_results = {"status": "success", "diff_df": diff_df, "llm_summary": llm_summary, "updated_count": updated_count}
-                                st.rerun()
-                            else:
-                                st.session_state.risk_event_results = {"status": "error", "message": "Simulation did not find any matching relationships to update. Please check your inputs."}
-                                st.rerun()
-                        except Exception as e:
-                            st.session_state.risk_event_results = {"status": "error", "message": f"Error during risk event scenario: {e}"}
+            if selected_risk_factor:
+                with st.spinner("Running risk event scenario..."):
+                    try:
+                        st.session_state.risk_engine.export_snapshot("output/snapshot_before.json")
+                        
+                        updated_count = st.session_state.risk_engine.simulate_risk_event(
+                            risk_factor_name=selected_risk_factor,
+                            impact_multiplier=impact_multiplier,
+                            target_company_id=company_name_to_id.get(target_company),
+                            target_sector=target_sector if target_sector else None,
+                            target_location=target_location if target_location else None
+                        )
+                        if updated_count > 0:
+                            st.session_state.risk_engine.compute_total_risk()
+                            st.session_state.risk_engine.dollarize_risk()
+                            st.cache_data.clear()
+                            st.cache_resource.clear()
+                            st.session_state.risk_engine.export_snapshot("output/snapshot_after.json")
+                            st.session_state.risk_engine.generate_diff("output/snapshot_before.json", "output/snapshot_after.json")
+                            diff_df = pd.read_csv("output/diff_report.csv")
+                            diff_df = diff_df[diff_df['delta'] != 0] # Filter for non-zero changes
+                            llm_summary = "❌ LLM is not configured (GEMINI_API_KEY missing or invalid)."
+                            if LLM_ENABLED and not diff_df.empty:
+                                llm_summary = query_llm(f"Summarize the following risk changes after a risk event. Focus on top gainers/losers in total risk. Data:\n{diff_df.to_string()}")
+                            st.session_state.risk_event_results = {"status": "success", "diff_df": diff_df, "llm_summary": llm_summary}
                             st.rerun()
+                        else:
+                            st.session_state.risk_event_results = {"status": "info", "message": "No companies were exposed to the selected risk factor, or the event had no effect."}
+                            st.rerun()
+                    except Exception as e:
+                        st.session_state.risk_event_results = {"status": "error", "message": f"Error during risk event scenario: {e}"}
+                        st.rerun()
             else:
-                st.warning("Please provide a Risk Factor Name and a target.")
+                st.warning("Please select a risk factor to run the simulation.")
 
         if st.session_state.get('risk_event_results') and st.session_state.risk_event_results["status"] == "success":
             results = st.session_state.risk_event_results
-            st.success(f"Risk event simulated successfully! Updated {results['updated_count']} risk exposures.")
+            st.success("Risk event simulated successfully!")
             diff_df = results["diff_df"]
             if not diff_df.empty:
                 st.subheader("📈 Risk Changes After Event")
                 st.markdown("**LLM Summary:**")
                 st.markdown(results["llm_summary"])
                 st.dataframe(diff_df)
-                st.download_button("📥 Download Risk Changes CSV", diff_df.to_csv(index=False).encode('utf-8'), file_name="risk_event_risk_changes.csv")
+                st.download_button("📥 Download Risk Changes CSV", diff_df.to_csv(index=False).encode('utf-8'), file_name="risk_event_changes.csv")
             else:
-                st.info("No significant risk changes detected after event. This may be due to the target not being exposed to the specified risk factor, or the multiplier causing too small a change.")
+                st.info("No significant risk changes detected after the event.")
         elif st.session_state.get('risk_event_results') and st.session_state.risk_event_results["status"] == "error":
-            st.error(st.session_state.risk_event_results["message"])
-
+            st.error(f"❌ {st.session_state.risk_event_results['message']}")
+        elif st.session_state.get('risk_event_results') and st.session_state.risk_event_results["status"] == "info":
+            st.info(f"ℹ️ {st.session_state.risk_event_results['message']}")
+            
 elif selected_page == "💬 NL Query":
-    st.header("💬 Ask a Question about the Graph")
-    query_text = st.text_input("e.g., 'Which companies have total risk > 0.5?'")
-    if st.button("🔍 Run Query"):
+    st.header("💬 Natural Language Query")
+    st.info("Ask any question about your risk data or the dashboard's features. For example: 'Which companies have the highest cybersecurity risk?' or 'What is the dollarized risk of Tech Solutions Inc.?'")
+    
+    user_question = st.text_area("Your Question:", height=100, help="Enter your question about the data or the application.")
+    
+    if st.button("Generate Answer"):
         if not LLM_ENABLED:
-            st.warning("LLM features are disabled because GEMINI_API_KEY is missing.")
-        elif not query_text.strip():
-            st.warning("Please enter a question.")
+            st.error("❌ LLM is disabled. Please ensure you have a valid GEMINI_API_KEY set in your `.env` file.")
+        elif user_question.strip() == "":
+            st.warning("Please enter a question to generate an answer.")
         else:
-            with st.spinner("Generating Cypher query and running..."):
-                schema_prompt = """
-You are an expert Cypher engineer generating queries ONLY for Memgraph.
-The schema is for a company risk knowledge graph with the following structure and business logic:
-- Node Labels: `Company`, `Blockholder`, `RiskFactor`.
-- Relationship Types: `OWNS`, `EXPOSED_TO`.
-- **Nodes**:
-    - `Company` nodes have properties: `id`, `name`, `sector`, `location`, `total_risk`, `direct_risk`, `dollarized_risk`, `market_cap`.
-    - `Blockholder` nodes have properties: `id`, `name`, `type`, `total_risk`, `dollarized_risk`.
-    - `RiskFactor` nodes have a `name` property.
-- **Relationships**:
-    - `(p:Blockholder)-[o:OWNS]->(c:Company)`: `p` owns `c`. The relationship has a `percent` property (e.g., 0.5 for 50%).
-    - `(c:Company)-[e:EXPOSED_TO]->(rf:RiskFactor)`: `c` is exposed to `rf`. The relationship has a `weight` property (0.0-1.0).
-- **Business Logic & Data Best Practices**:
-    - A `Company`'s `direct_risk` is the sum of all `e.weight` values from its outgoing `EXPOSED_TO` relationships.
-    - A `Blockholder`'s `total_risk` is a sum of its own `direct_risk` (if it were a company) plus the risks inherited from the companies it owns. The inherited risk is calculated as the owned company's `total_risk` multiplied by the ownership `o.percent`.
-    - `dollarized_risk` is calculated by multiplying `total_risk` by `market_cap`.
-    - To make queries more robust and handle case sensitivity, use `toLower()` for string matching, for example: `WHERE toLower(c.location) = 'new york'`.
-    - To prevent errors with null values, use `coalesce(property, 0)`.
-- **Example Query and Answer Pattern**:
-    Question: "What is the total risk of Apple Inc.?"
-    Correct Query:
-    MATCH (c:Company {name: "Apple Inc."})
-    RETURN c.total_risk AS TotalRisk
-    Question: "Which companies in the Energy sector have a total risk higher than 0.8?"
-    Correct Query:
-    MATCH (c:Company)
-    WHERE c.sector = "Energy" AND coalesce(c.total_risk, 0) > 0.8
-    RETURN c.name AS Company, c.total_risk AS TotalRisk
-    Question: "List the top 5 riskiest companies."
-    Correct Query:
-    MATCH (c:Company)
-    RETURN c.name AS Company, c.total_risk AS TotalRisk
-    ORDER BY TotalRisk DESC
-    LIMIT 5
-    Question: "Does Berkshire Hathaway Inc. own Exxon Mobil?"
-    Correct Query:
-    MATCH (b:Blockholder {name: "Berkshire Hathaway Inc."})-[o:OWNS]->(c:Company {name: "Exxon Mobil"})
-    RETURN o.percent AS OwnershipPercent
-    Question: "Which risk factor is J.P. Morgan Exchange-Traded Fund Trust most affected by?"
-    Correct Query:
-    MATCH (bh:Blockholder {name: "J.P. Morgan Exchange-Traded Fund Trust"})-[o:OWNS]->(c:Company)-[e:EXPOSED_TO]->(rf:RiskFactor)
-    RETURN rf.name AS RiskFactor, sum(coalesce(o.percent, 0) * coalesce(e.weight, 0)) AS InheritedRisk
-    ORDER BY InheritedRisk DESC
-    LIMIT 1
-    Question: "What is the dollarized risk of Apple Inc.?"
-    Correct Query:
-    MATCH (c:Company {name: "Apple Inc."})
-    RETURN c.dollarized_risk AS DollarizedRisk
-Now, translate the following natural language question into a valid, standalone Cypher query. Do not include any comments or extra text outside of the query itself.
-"""
-                try:
-                    model_for_query = get_gemini_model()
-                    if model_for_query:
-                        prompt_with_instructions = schema_prompt + f'"{query_text.strip()}"'
-                        response_text = model_for_query.generate_content(prompt_with_instructions).text
-                        cypher_query = response_text.strip().lstrip("```cypher").rstrip("```").strip()
+            try:
+                with st.spinner("Thinking..."):
+                    generated_answer, cypher_query, cypher_result = explain_query_result(user_question, st.session_state.risk_engine.driver)
+                    
+                    st.success("✅ Answer Generated!")
+                    st.markdown(f"**Answer:**\n{generated_answer}")
+                    
+                    with st.expander("Details (Cypher Query and Result)"):
+                        st.markdown("**Cypher Query:**")
                         st.code(cypher_query, language="cypher")
-                        memgraph_client = Memgraph()
-                        results = memgraph_client.execute_and_fetch(cypher_query)
-                        df = pd.DataFrame(results)
-                        if df.empty:
-                            st.info("Query returned no results.")
-                        else:
-                            explanation = explain_query_result(cypher_query, df.head())
-                            st.markdown("#### 📝 Summary of Results")
-                            st.markdown(explanation)
-                            st.markdown("#### 📊 Query Result")
-                            st.dataframe(df)
-                            st.download_button("📥 Download CSV", df.to_csv(index=False).encode('utf-8'), file_name="query_results.csv")
-                    else:
-                        st.warning("LLM model could not be initialized. Check API Key.")
-                except Exception as e:
-                    st.error(f"❌ Error running LLM-generated query or processing results: {e}")
-                    st.info("Possible issues: Invalid Cypher from LLM, Memgraph connection, or data error.")
+                        st.markdown("**Query Result:**")
+                        st.json(cypher_result)
+                        
+            except Exception as e:
+                st.error(f"❌ An error occurred while processing your request: {e}")
+                st.info("Possible issues: Invalid Cypher from LLM, Memgraph connection, or data error.")
+
+
 
 st.markdown("---")
-st.caption("Developed for portfolio graph analytics using Memgraph, Streamlit, and Google Gemini.")
+st.caption("Developed for Mphasis.Ai for graph analytics using Memgraph, Streamlit, and Google Gemini.")

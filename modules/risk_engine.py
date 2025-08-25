@@ -37,46 +37,36 @@ class RiskEngine:
     def compute_total_risk(self, max_iterations=15):
         """
         Computes total_risk for all companies/blockholders by propagating direct risks through
-        ownership chains. 'indirect_risk' property is removed for simplicity with current model.
+        ownership chains. This version is non-iterative for better stability.
         """
         print("\n--- Starting Total Risk Propagation ---")
         with self.driver.session() as session:
+            # Step 1: Reset existing risk properties for all relevant nodes
             session.run("""
                 MATCH (n) WHERE n:Company OR n:Blockholder
                 SET n.total_risk = 0.0,
                     n.direct_risk = coalesce(n.direct_risk, 0.0)
-                REMOVE n.indirect_risk
             """)
-            print("INFO: Resetting previous risk properties and removed indirect_risk.")
+            print("INFO: Resetting previous risk properties.")
 
+            # Step 2: Calculate direct risk for Companies and set it as their initial total_risk
             session.run("""
                 MATCH (c:Company)-[e:EXPOSED_TO]->(r:RiskFactor)
-                WITH c, sum(toFloat(e.weight)) AS direct_risk_sum_raw
-                SET c.direct_risk = direct_risk_sum_raw,
-                    c.total_risk = direct_risk_sum_raw
+                WITH c, sum(toFloat(e.weight)) AS direct_risk_sum
+                SET c.direct_risk = direct_risk_sum,
+                    c.total_risk = direct_risk_sum
             """)
             print("INFO: Initial direct risks assigned to Companies.")
 
+            # Step 3: Propagate risk from owned companies to their owners (Blockholders)
+            # This is done in one pass, ensuring all inherited risk is calculated directly.
             session.run("""
-                MATCH (b:Blockholder)
-                WHERE b.total_risk IS NULL
-                SET b.total_risk = 0.0
+                MATCH (p:Blockholder)-[o:OWNS]->(c:Company)
+                WITH p, sum(toFloat(o.percent) * coalesce(c.total_risk, 0)) AS inherited_risk
+                SET p.total_risk = inherited_risk
             """)
-            print("INFO: Initialized Blockholder total_risk to 0 where not set.")
+            print("INFO: Propagated risk to Blockholders from owned companies.")
 
-            updated = True
-            iteration = 0
-
-            while updated and iteration < max_iterations:
-                updates_count = session.write_transaction(self._propagate_risk_step)
-                print(f"INFO: Iteration {iteration + 1}: Nodes updated = {updates_count}")
-                updated = updates_count > 0
-                iteration += 1
-
-            if iteration >= max_iterations and updated:
-                print(f"WARNING: Risk propagation reached max iterations ({max_iterations}) and may not have fully converged. Consider increasing max_iterations.")
-            else:
-                print(f"INFO: Risk propagation converged in {iteration} iterations.")
         print("--- Total Risk Propagation Complete ---")
 
     def normalize_risk_scores(self, new_property_name="normalized_risk", max_score=100.0):
@@ -109,22 +99,24 @@ class RiskEngine:
         """
         print("\n--- Starting Dollarized Risk Calculation ---")
         with self.driver.session() as session:
-            # Dollarize risk for companies
+            # Step 1: Dollarize risk for companies
             session.run("""
                 MATCH (c:Company)
                 SET c.dollarized_risk = coalesce(c.total_risk, 0) * coalesce(c.market_cap, 0)
             """)
 
-            # Dollarize risk for blockholders (by summing the dollarized risk of what they own)
+            # Step 2: Dollarize risk for blockholders (by summing the dollarized risk of what they own)
             session.run("""
                 MATCH (bh:Blockholder)-[o:OWNS]->(c:Company)
+                WHERE c.dollarized_risk IS NOT NULL
                 WITH bh, sum(coalesce(o.percent, 0) * coalesce(c.dollarized_risk, 0)) AS total_inherited_dollar_risk
                 SET bh.dollarized_risk = total_inherited_dollar_risk
             """)
             
-            # Dollarize risk for risk factors (by summing the dollarized risk of all companies exposed to it)
+            # Step 3: Dollarize risk for risk factors (by summing the dollarized risk of all companies exposed to it)
             session.run("""
                 MATCH (c:Company)-[e:EXPOSED_TO]->(rf:RiskFactor)
+                WHERE c.dollarized_risk IS NOT NULL
                 WITH rf, sum(coalesce(c.dollarized_risk, 0) * coalesce(e.weight, 0)) AS total_dollar_exposure
                 SET rf.dollarized_risk = total_dollar_exposure
             """)
@@ -133,21 +125,9 @@ class RiskEngine:
     def _propagate_risk_step(self, tx):
         """
         Single step of iterative risk propagation. Updates total_risk for owning nodes.
+        (This method is now unused, as the new propagation is a single pass.)
         """
-        query = """
-            MATCH (p)-[o:OWNS]->(c:Company)
-            WHERE c.total_risk IS NOT NULL
-              AND (p:Company OR p:Blockholder)
-            WITH p, toFloat(coalesce(p.direct_risk, 0)) AS current_p_direct_risk,
-                 sum(toFloat(o.percent) * toFloat(coalesce(c.total_risk, 0))) AS total_inherited_from_owned
-            WITH p, current_p_direct_risk, total_inherited_from_owned,
-                 (current_p_direct_risk + total_inherited_from_owned) AS new_p_total_risk
-            WHERE abs(toFloat(coalesce(p.total_risk, 0)) - new_p_total_risk) > 0.0001
-            SET p.total_risk = new_p_total_risk
-            RETURN count(p) AS updates
-        """
-        updates_count = tx.run(query).single()["updates"]
-        return updates_count
+        pass
 
     def compute_sector_concentration(self, threshold=0.3):
         """Identifies sectors with high concentration of dollarized risk."""
@@ -156,7 +136,7 @@ class RiskEngine:
             sector_results = session.read_transaction(
                 lambda tx: tx.run("""
                     MATCH (c:Company)
-                    WHERE c.sector IS NOT NULL AND c.dollarized_risk IS NOT NULL
+                    WHERE c.dollarized_risk IS NOT NULL AND c.dollarized_risk > 0 AND c.sector IS NOT NULL
                     RETURN c.sector AS sector, sum(coalesce(c.dollarized_risk, 0)) AS sector_risk
                 """).data()
             )
@@ -190,8 +170,6 @@ class RiskEngine:
         print("--- Finished Computing Critical Companies by Network Degree ---")
         return critical_nodes
 
-    # The compute_pagerank_centrality function has been removed.
-    
     def export_risks_to_csv(self, filename="output/risk_scores.csv"):
         """Exports current graph state of companies/blockholders with their dollarized risk scores to a CSV file."""
         print(f"--- Exporting dollarized risk scores to {filename} ---")
@@ -232,7 +210,10 @@ class RiskEngine:
         print("--- Snapshot exported. ---")
 
     def generate_diff(self, before_path, after_path, output="output/diff_report.csv"):
-        """Compares two snapshots and generates a CSV report of risk deltas."""
+        """
+        Compares two snapshots and generates a CSV report of risk deltas.
+        This version has been modified to show all changes, regardless of size.
+        """
         print("\n--- Generating Diff Report ---")
         try:
             if not os.path.exists(before_path) or os.path.getsize(before_path) == 0:
@@ -250,16 +231,16 @@ class RiskEngine:
             for cid, after_data in after.items():
                 before_data = before.get(cid, {})
                 delta = (after_data.get("dollarized_risk", 0) or 0) - (before_data.get("dollarized_risk", 0) or 0)
-                if abs(delta) > 0.01:
-                    diff.append({
-                        "id": cid,
-                        "name": after_data.get("name", "N/A"),
-                        "risk_before": round(before_data.get("dollarized_risk", 0) or 0, 2),
-                        "risk_after": round(after_data.get("dollarized_risk", 0) or 0, 2),
-                        "delta": round(delta, 2),
-                        "sector": after_data.get("sector", "N/A"),
-                        "location": after_data.get("location", "N/A")
-                    })
+                # Removed the if abs(delta) > 0.01: filter
+                diff.append({
+                    "id": cid,
+                    "name": after_data.get("name", "N/A"),
+                    "risk_before": round(before_data.get("dollarized_risk", 0) or 0, 2),
+                    "risk_after": round(after_data.get("dollarized_risk", 0) or 0, 2),
+                    "delta": round(delta, 2),
+                    "sector": after_data.get("sector", "N/A"),
+                    "location": after_data.get("location", "N/A")
+                })
             
             os.makedirs(os.path.dirname(output), exist_ok=True)
             with open(output, "w", newline="") as f:
@@ -368,10 +349,10 @@ class RiskEngine:
                 update_query = f"""
                 {match_clause}
                 SET e.weight = CASE
-                                        WHEN e.weight * $impact_multiplier > 1.0 THEN 1.0
-                                        WHEN e.weight * $impact_multiplier < 0.0 THEN 0.0
-                                        ELSE e.weight * $impact_multiplier
-                                        END
+                                    WHEN e.weight * $impact_multiplier > 1.0 THEN 1.0
+                                    WHEN e.weight * $impact_multiplier < 0.0 THEN 0.0
+                                    ELSE e.weight * $impact_multiplier
+                                    END
                 RETURN count(e) AS updated_exposures
                 """
                 
