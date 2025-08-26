@@ -34,12 +34,12 @@ def render_graph_as_html(cypher_query: str) -> str:
           "iterations": 1000
         },
         "barnesHut": {
-          "gravitationalConstant": -20000,
+          "gravitationalConstant": -30000,
           "centralGravity": 0.3,
-          "springLength": 250,
+          "springLength": 300,
           "springConstant": 0.05,
           "damping": 0.9,
-          "avoidOverlap": 1.2
+          "avoidOverlap": 2.5
         },
         "minVelocity": 0.75,
         "solver": "barnesHut"
@@ -66,6 +66,10 @@ def render_graph_as_html(cypher_query: str) -> str:
     seen_nodes = set()
     all_dollarized_risks = [getattr(node, 'dollarized_risk', 0) for record in results for node in (record.get('c'), record.get('bh'), record.get('owned_c'), record.get('sub_owned_c')) if node and getattr(node, 'dollarized_risk', 0) is not None]
     max_risk = max(all_dollarized_risks) if all_dollarized_risks else 1.0
+
+    # Get the selected node ID from the query to highlight it
+    match = re.search(r"\'(C_\d+|B_\d+)\'", cypher_query)
+    selected_node_id = match.group(1) if match else None
 
     def get_risk_category(risk, max_risk):
         if risk == 0:
@@ -175,8 +179,14 @@ def render_graph_as_html(cypher_query: str) -> str:
                 node_shape = 'diamond'
             
             node_size = 10
-            
-            if "RiskFactor" in node_labels:
+            border_width = 1
+            border_color = "#BB86FC"
+
+            if node_id == selected_node_id:
+                node_color = "#59565D"
+                node_size = 50
+                border_width = 3
+            elif "RiskFactor" in node_labels:
                 node_exposure_weight = sum(getattr(relationship, 'weight', 0) for _, target, relationship in edges_in_record if target and getattr(target, 'name', None) == name and isinstance(relationship, EXPOSED_TO))
                 if node_exposure_weight and max_exposure_weight > 0:
                     node_size = 10 + 20 * (node_exposure_weight / max_exposure_weight)
@@ -191,14 +201,16 @@ def render_graph_as_html(cypher_query: str) -> str:
             risk_category = get_risk_category(dollarized_risk, max_risk)
             formatted_dollar_risk = format_dollars(dollarized_risk)
             node_title = f"{name}<br>Risk Category: {risk_category}<br>Risk: {formatted_dollar_risk}"
-
+                
             net.add_node(
                 node_id,
                 label=name,
                 title=node_title,
                 color=node_color,
                 size=max(node_size, 10),
-                shape=node_shape
+                shape=node_shape,
+                border_width=border_width,
+                border_color=border_color
             )
             seen_nodes.add(node_id)
         

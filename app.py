@@ -562,35 +562,86 @@ elif selected_page == "🧪 Scenario Analysis":
             st.info(f"ℹ️ {st.session_state.risk_event_results['message']}")
             
 elif selected_page == "💬 NL Query":
-    st.header("💬 Natural Language Query")
-    st.info("Ask any question about your risk data or the dashboard's features. For example: 'Which companies have the highest cybersecurity risk?' or 'What is the dollarized risk of Tech Solutions Inc.?'")
-    
-    user_question = st.text_area("Your Question:", height=100, help="Enter your question about the data or the application.")
-    
-    if st.button("Generate Answer"):
+    st.header("💬 Ask a Question about the Graph")
+    query_text = st.text_input("e.g., 'Which companies have total risk > 0.5?'")
+    if st.button("🔍 Run Query"):
         if not LLM_ENABLED:
-            st.error("❌ LLM is disabled. Please ensure you have a valid GEMINI_API_KEY set in your `.env` file.")
-        elif user_question.strip() == "":
-            st.warning("Please enter a question to generate an answer.")
+            st.warning("LLM features are disabled because GEMINI_API_KEY is missing.")
+        elif not query_text.strip():
+            st.warning("Please enter a question.")
         else:
-            try:
-                with st.spinner("Thinking..."):
-                    generated_answer, cypher_query, cypher_result = explain_query_result(user_question, st.session_state.risk_engine.driver)
-                    
-                    st.success("✅ Answer Generated!")
-                    st.markdown(f"**Answer:**\n{generated_answer}")
-                    
-                    with st.expander("Details (Cypher Query and Result)"):
-                        st.markdown("**Cypher Query:**")
+            with st.spinner("Generating Cypher query and running..."):
+                schema_prompt = """
+You are an expert Cypher engineer generating queries ONLY for Memgraph.
+Your task is to translate a user's natural language question into a valid, standalone Cypher query.
+Do not include any comments, explanations, or extra text outside of the query itself.
+# Schema
+- Node Labels: `Company`, `Blockholder`, `RiskFactor`.
+- Relationship Types: `OWNS`, `EXPOSED_TO`.
+# Node Properties:
+- `Company`: `id`, `name`, `sector`, `location`, `total_risk`, `direct_risk`, `dollarized_risk`, `market_cap`.
+- `Blockholder`: `id`, `name`, `type`, `total_risk`, `dollarized_risk`.
+- `RiskFactor`: `name`.
+# Relationship Properties:
+- `(p:Blockholder)-[o:OWNS]->(c:Company)`: `p` owns `c`. The relationship has a `percent` property (0.0-1.0), `year`.
+- `(c:Company)-[e:EXPOSED_TO]->(rf:RiskFactor)`: `c` is exposed to `rf`. The relationship has a `weight` property (0.0-1.0).
+# Business Logic & Best Practices:
+- A `Company`'s `direct_risk` is the sum of all `e.weight` values from its outgoing `EXPOSED_TO` relationships.
+- A `Blockholder`'s `total_risk` is a sum of its own `direct_risk` (if it were a company) plus the risks inherited from the companies it owns. The inherited risk is calculated as the owned company's `total_risk` multiplied by the ownership `o.percent`.
+- `dollarized_risk` is calculated by multiplying `total_risk` by `market_cap`.
+- To make queries more robust and handle case sensitivity, use `toLower()` for string matching, for example: `WHERE toLower(c.location) = 'new york'`.
+- To prevent errors with null values, use `coalesce(property, 0)`.
+- **Always use `id` or `name` for node identification.** `id` is a unique identifier, and `name` is the human-readable label. The user's query may use either.
+- **For queries asking about what a company or blockholder owns, match from the `name` property and traverse the outgoing `OWNS` relationship.**
+- **For queries asking about who owns a company, match from the company's `name` property and traverse the incoming `OWNS` relationship.**
+# Few-Shot Examples (Question -> Correct Query):
+Question: "Which companies are owned by MORGAN STANLEY?"
+MATCH (bh:Blockholder {name: "MORGAN STANLEY"})-[o:OWNS]->(c:Company) RETURN c.name AS OwnedCompany, o.percent AS OwnershipPercentage
+Question: "Who owns TIGER GLOBAL MANAGEMENT LLC?"
+MATCH (c:Company {name: "TIGER GLOBAL MANAGEMENT LLC"})<-[o:OWNS]-(bh:Blockholder) RETURN bh.name AS OwningBlockholder, o.percent AS OwnershipPercentage
+Question: "Which companies in the Energy sector have a total risk higher than 0.8?"
+MATCH (c:Company) WHERE c.sector = "Energy" AND coalesce(c.total_risk, 0) > 0.8 RETURN c.name AS Company, c.total_risk AS TotalRisk
+Question: "List the top 5 riskiest companies."
+MATCH (c:Company) RETURN c.name AS Company, c.total_risk AS TotalRisk ORDER BY TotalRisk DESC LIMIT 5
+Question: "What is the total dollarized risk for 'MORGAN STANLEY'?"
+MATCH (bh:Blockholder {name: "MORGAN STANLEY"}) RETURN bh.dollarized_risk AS TotalDollarizedRisk
+Question: "Which companies contribute most to the risk of 'MORGAN STANLEY'?"
+MATCH (b:Blockholder {name: "MORGAN STANLEY"})-[o:OWNS]->(c:Company) RETURN c.name AS Company, (coalesce(c.dollarized_risk, 0) * coalesce(o.percent,0)) AS ContributedDollarizedRisk ORDER BY ContributedDollarizedRisk DESC
+Question: "Find all blockholders who own a stake in both Apple Inc. and Microsoft Corp."
+MATCH (b:Blockholder)-[:OWNS]->(c1:Company {name: 'Apple Inc.'}), (b)-[:OWNS]->(c2:Company {name: 'Microsoft Corp.'}) RETURN DISTINCT b.name AS BlockholderName
+Now, translate the following natural language question into a valid, standalone Cypher query. Do not include any comments or extra text outside of the query itself.
+"""
+                try:
+                    model_for_query = get_gemini_model()
+                    if model_for_query:
+                        prompt_with_instructions = schema_prompt + f'"{query_text.strip()}"'
+                        response_text = model_for_query.generate_content(prompt_with_instructions).text
+                        cypher_query = response_text.strip().lstrip("```cypher").rstrip("```").strip()
                         st.code(cypher_query, language="cypher")
-                        st.markdown("**Query Result:**")
-                        st.json(cypher_result)
                         
-            except Exception as e:
-                st.error(f"❌ An error occurred while processing your request: {e}")
-                st.info("Possible issues: Invalid Cypher from LLM, Memgraph connection, or data error.")
-
-
+                        memgraph_client = Memgraph()
+                        results = memgraph_client.execute_and_fetch(cypher_query)
+                        
+                        # --- FIX: Check for results before creating DataFrame ---
+                        if results:
+                            df = pd.DataFrame(results)
+                            if df.empty:
+                                st.info("Query returned no results.")
+                            else:
+                                explanation = explain_query_result(cypher_query, df.head())
+                                st.markdown("#### 📝 Summary of Results")
+                                st.markdown(explanation)
+                                st.markdown("#### 📊 Query Result")
+                                st.dataframe(df)
+                                st.download_button("📥 Download CSV", df.to_csv(index=False).encode('utf-8'), file_name="query_results.csv")
+                        else:
+                            st.info("Query returned no results or there was a connection error.")
+                        # --- END FIX ---
+                    else:
+                        st.warning("LLM model could not be initialized. Check API Key.")
+                except Exception as e:
+                    st.error(f"❌ Error running LLM-generated query or processing results: {e}")
+                    st.info("Possible issues: Invalid Cypher from LLM, Memgraph connection, or data error.")
 
 st.markdown("---")
-st.caption("Developed for Mphasis.Ai for graph analytics using Memgraph, Streamlit, and Google Gemini.")
+st.caption("Developed for Mphasis.ai, portfolio graph analytics using Memgraph, Streamlit")
